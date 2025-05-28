@@ -5,14 +5,14 @@ import json
 import os
 import requests
 from io import BytesIO
-import magic
 
 # تنظیمات اولیه
-TOKEN = os.getenv("8134270114:AAEo1_liGmb1fZPURho993Ej9nEl06GGYqo", "8134270114:AAEo1_liGmb1fZPURho993Ej9nEl06GGYqo")  # توکن از متغیر محیطی یا مستقیم
+TOKEN = os.getenv("BOT_TOKEN")  # توکن از متغیر محیطی
+if not TOKEN:
+    raise ValueError("BOT_TOKEN not set in environment variables")
 ADMIN_IDS = [5738171226]  # آیدی ادمین‌ها
 bot = telebot.TeleBot(TOKEN)
 client = Client()
-mime = magic.Magic(mime=True)
 
 # مسیر فایل‌های JSON
 USER_DATA_FILE = "Database/user_data.json"
@@ -55,7 +55,7 @@ def show_menu(chat_id, menu_type="default"):
 
 # بررسی عضویت در کانال
 def check_channel_membership(chat_id):
-    required_channels = ["+BgK3IxU2zdo0NmQ8"]  # جایگزین با نام کاربری کانال
+    required_channels = ["+BgK3IxU2zdo0NmQ8"]  # بدون @ یا +
     non_member_channels = []
     for channel in required_channels:
         try:
@@ -121,14 +121,14 @@ def handle_message(message):
         user_data[chat_id]["chat_history"] = []
         user_data[chat_id]["image_history"] = []
         bot.reply_to(message, "چت جدید شروع شد!", reply_markup=show_menu(chat_id))
-    elif message.text in ["GPT-4o", "GPT-4o-mini", "Gemini 1.5 Pro", "Llama 3.1", "Dall-e 3", "Flux", "Midjourney"]:
+    elif message.text in ["GPT-4o", "GPT-4o-mini", "Gemini 1.5 Pro", "Llama 3.1", "Dall-e 3", "Flux"]:
         model_map = {
-            "GPT-4o": "gpt-4o", "GPT-4o-mini": "gpt-4o-mini", "Gemini 1.5 Pro": "gemini-1.5-pro",
-            "Llama 3.1": "llama-3.1-70b", "Dall-e 3": "dall-e-3", "Flux": "flux", "Midjourney": "midjourney"
+            "GPT-4o": "gpt-4o", "GPT-4o-mini": "gpt-4o-mini", "Gemini 1.5 Pro": "gemini-pro",
+            "Llama 3.1": "llama3-70b", "Dall-e 3": "dall-e-3", "Flux": "flux-1"
         }
         user_data[chat_id]["model"] = model_map[message.text]
         bot.reply_to(message, f"مدل به {message.text} تغییر کرد.", 
-                     reply_markup=show_menu(chat_id, "text" if message.text in ["GPT-4o", "GPT-4o-mini", "Gemini 1.5 Pro", "Llama 3.1"] else "image"))
+            reply_markup=show_menu(chat_id, "text" if message.text in ["GPT-4o", "GPT-4o-mini", "Gemini 1.5 Pro", "Llama 3.1"] else "image"))
     else:
         try:
             user_data[chat_id]["last_message_time"].append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -136,27 +136,24 @@ def handle_message(message):
             history = user_data[chat_id]["chat_history"]
             history.append({"role": "user", "content": message.text})
             
-            if model in ["dall-e-3", "flux", "midjourney"]:
-                response = client.images.generate(model=model, prompt=message.text, response_format="url")
-                if response.data[0].url:
-                    file_bytes = BytesIO(requests.get(response.data[0].url).content)
-                    file_bytes.name = "image.jpg"
-                    bot.send_document(message.chat.id, file_bytes, reply_to_message_id=message.message_id, 
-                                   reply_markup=show_menu(chat_id, "image"))
+            if model in ["dall-e-3", "flux-1"]:
+                response = client.chat.completions.create(model=model, messages=[{"role": "user", "content": f"Generate an image: {message.text}"}])
+                answer = response.choices[0].message.content
+                bot.reply_to(message, answer, reply_markup=show_menu(chat_id, "image"))
             else:
                 response = client.chat.completions.create(model=model, messages=history)
                 answer = response.choices[0].message.content
                 if len(answer) > 4095:
                     answer = answer[:4092] + "..."
-                bot.reply_to(message, answer, reply_markup=show_menu(chat_id, "text"))
+                bot.reply_to(message=message, text=answer, reply_markup=show_menu(chat_id, "text"))
                 history.append({"role": "assistant", "content": answer})
             
-            user_data[chat_id]["chat_history"] = history[-10:]  # محدود کردن تاریخچه به 10 پیام آخر
+            user_data[chat_id]["chat_history"] = history[-10:]  # محدود کردن تاریخچه
             save_user_data(user_data)
         except Exception as e:
-            bot.reply_to(message, "خطایی رخ داد. لطفاً دوباره امتحان کنید. 🔄", reply_markup=show_menu(chat_id))
-            for admin in ADMIN_IDS:
-                bot.send_message(admin, f"خطا در چت‌بات:\nکاربر: {chat_id}\nخطا: {str(e)}")
+            bot.reply_to(message, "خطا رخ داد. لطفاً دوباره امتحان کنید. 🔍", reply_markup=show_menu(chat_id))
+            for admin_id in ADMIN_IDS:
+                bot.send_message(admin_id, f"خطا در چت‌بات:\nکاربر: {chat_id}\nخطا: {str(e)}")
 
 # هندلر تصاویر (تحلیل خودکار)
 @bot.message_handler(content_types=["photo"])
@@ -187,11 +184,15 @@ def handle_photo(message):
         # ارسال پیام در حال پردازش
         processing_msg = bot.reply_to(message, "در حال تحلیل تصویر... ⏳", reply_markup=show_menu(chat_id))
         
-        # درخواست تحلیل تصویر از gpt4free
+        # درخواست تحلیل تصویر
         response = client.chat.completions.create(
             model="gpt-4o",
-            image=file_url,
-            messages=user_data[chat_id]["chat_history"] + [{"role": "user", "content": "لطفاً این تصویر را تحلیل کنید."}]
+            messages=[
+                {"role": "user", "content": [
+                    {"type": "text", "text": "لطفاً این تصویر را تحلیل کنید."},
+                    {"type": "image_url", "image_url": {"url": file_url}}
+                ]}
+            ]
         )
         answer = response.choices[0].message.content
         if len(answer) > 4095:
@@ -201,16 +202,16 @@ def handle_photo(message):
         bot.delete_message(chat_id, processing_msg.message_id)
         
         # ارسال پاسخ تحلیل
-        bot.reply_to(message, answer, reply_markup=show_menu(chat_id))  # منوی پیش‌فرض برای ادامه مکالمه
+        bot.reply_to(message, answer, reply_markup=show_menu(chat_id))
         
         # ذخیره پاسخ در تاریخچه
         user_data[chat_id]["chat_history"].append({"role": "assistant", "content": answer})
-        user_data[chat_id]["chat_history"] = user_data[chat_id]["chat_history"][-10:]  # محدود کردن تاریخچه
+        user_data[chat_id]["chat_history"] = user_data[chat_id]["chat_history"][-10:]
         save_user_data(user_data)
     except Exception as e:
-        bot.reply_to(message, "خطایی در تحلیل تصویر رخ داد. 🔄", reply_markup=show_menu(chat_id))
-        for admin in ADMIN_IDS:
-            bot.send_message(admin, f"خطا در تحلیل تصویر:\nکاربر: {chat_id}\nخطا: {str(e)}")
+        bot.reply_to(message, "خطا در تحلیل تصویر رخ داد. 🔍", reply_markup=show_menu(chat_id))
+        for admin_id in ADMIN_IDS:
+            bot.send_message(admin_id, f"خطا در تحلیل تصویر:\nکاربر: {chat_id}\nخطا: {str(e)}")
 
 # هندلر دکمه تأیید عضویت
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_membership")
